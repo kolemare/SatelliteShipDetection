@@ -1,0 +1,8 @@
+{
+    "dataset_path": "dataset/ships_in_satellite_imagery/shipsnet/shipsnet",
+    "epochs": 60,
+    "warmup_epochs": 5,
+    "batch_size": 32,
+    "num_workers": 4,
+    "seed": 42
+}

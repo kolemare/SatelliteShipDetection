@@ -1,7 +1,7 @@
 import os
 import zipfile
 
-def combine_and_extract(part1_path, part2_path, extract_to="dataset/ships_in_satellite_imagery"):
+def combine_and_extract(part1_path, part2_path, extract_to="training/dataset/ships_in_satellite_imagery"):
     combined_zip = "combined_temp.zip"
 
     # Combine the two parts

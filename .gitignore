@@ -1,5 +1,5 @@
 # Ignore the extracted dataset
-dataset/ships_in_satellite_imagery
+training/dataset/ships_in_satellite_imagery
 
 # Ignore the virtual environment
 venv
