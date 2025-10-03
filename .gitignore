@@ -1,5 +1,8 @@
 # Ignore the extracted dataset
 training/dataset/ships_in_satellite_imagery
 
+# Ignore pretrained network
+training/pretrained
+
 # Ignore the virtual environment
 venv
