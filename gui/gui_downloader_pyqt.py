@@ -30,7 +30,7 @@ import mercantile
 
 # ---------- Config ----------
 APP_DIR = Path(__file__).parent.resolve()
-OUTPUT_DIR = APP_DIR / "downloads"
+OUTPUT_DIR = APP_DIR.parent / "downloads"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # Known providers (XYZ):
