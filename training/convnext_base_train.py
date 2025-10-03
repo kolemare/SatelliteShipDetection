@@ -3,7 +3,6 @@ import os
 import json
 import random
 from pathlib import Path
-from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -13,6 +12,11 @@ from torch.utils.data import DataLoader, random_split, Dataset
 from torchvision import transforms, models
 from PIL import Image
 from tqdm import tqdm
+
+# --- plotting (headless-safe) ---
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 # ----------------------------
@@ -26,7 +30,7 @@ class ShipsDataset(Dataset):
         if not self.samples:
             raise RuntimeError(
                 f"No PNG files found under: {self.root.resolve()}\n"
-                f"Check convnext_base_cpu_train_config.json['dataset_path'] and folder structure."
+                f"Check convnext_base_config.json['dataset_path'] and folder structure."
             )
         self.transform = transform
 
@@ -56,25 +60,26 @@ def worker_init_fn(worker_id):
     random.seed(seed + worker_id)
 
 
-def build_dataloaders(config):
+def build_dataloaders(config, device):
     data_root = config["dataset_path"]
 
+    # NO CROPPING: upscale only; keep spatial content intact
     train_tfms = transforms.Compose([
-    transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-    transforms.RandomErasing(p=0.25),
-])
+        transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+        transforms.RandomErasing(p=0.25),   # set p=0.0 if you want zero "erasing"
+    ])
 
     test_tfms = transforms.Compose([
-    transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-])
+        transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
 
     full_dataset = ShipsDataset(data_root, transform=train_tfms)
     n_total = len(full_dataset)
@@ -87,12 +92,16 @@ def build_dataloaders(config):
     val_set.dataset.transform = test_tfms
     test_set.dataset.transform = test_tfms
 
+    pin = (device.type == "cuda")
     dl_train = DataLoader(train_set, batch_size=config["batch_size"], shuffle=True,
-                          num_workers=config["num_workers"], worker_init_fn=worker_init_fn)
+                          num_workers=config["num_workers"], pin_memory=pin,
+                          worker_init_fn=worker_init_fn, persistent_workers=(config["num_workers"] > 0))
     dl_val = DataLoader(val_set, batch_size=config["batch_size"], shuffle=False,
-                        num_workers=config["num_workers"], worker_init_fn=worker_init_fn)
+                        num_workers=config["num_workers"], pin_memory=pin,
+                        worker_init_fn=worker_init_fn, persistent_workers=(config["num_workers"] > 0))
     dl_test = DataLoader(test_set, batch_size=config["batch_size"], shuffle=False,
-                         num_workers=config["num_workers"], worker_init_fn=worker_init_fn)
+                         num_workers=config["num_workers"], pin_memory=pin,
+                         worker_init_fn=worker_init_fn, persistent_workers=(config["num_workers"] > 0))
 
     print(f"[INFO] Samples -> train: {len(train_set)}, val: {len(val_set)}, test: {len(test_set)}")
     return dl_train, dl_val, dl_test
@@ -110,21 +119,37 @@ def build_model(num_classes=2):
 
 
 # ----------------------------
-# Training & eval with per-batch logs
+# Training & eval with per-batch logs (AMP on CUDA)
 # ----------------------------
-def train_one_epoch(model, loader, criterion, optimizer, device, epoch_idx, total_epochs):
+def train_one_epoch(model, loader, criterion, optimizer, device, scaler, epoch_idx, total_epochs):
     model.train()
     total_loss, total_correct, total = 0.0, 0, 0
 
-    pbar = tqdm(loader, desc=f"Train {epoch_idx+1}/{total_epochs}", ncols=100)
+    pbar = tqdm(loader, desc=f"Train {epoch_idx+1}/{total_epochs}", ncols=110)
     for images, labels in pbar:
-        images, labels = images.to(device), labels.to(device)
+        images = images.to(device, non_blocking=True)
+        labels = torch.as_tensor(labels, device=device)
 
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+        if device.type == "cuda":
+            images = images.to(memory_format=torch.channels_last)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        if device.type == "cuda":
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+        else:
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+
+        if device.type == "cuda":
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         batch_size = labels.size(0)
         total_loss += loss.item() * batch_size
@@ -134,7 +159,6 @@ def train_one_epoch(model, loader, criterion, optimizer, device, epoch_idx, tota
 
         running_loss = total_loss / total
         running_acc = total_correct / total
-        # show current LR of first param group
         current_lr = optimizer.param_groups[0]["lr"]
         pbar.set_postfix(loss=f"{running_loss:.4f}", acc=f"{running_acc:.4f}", lr=f"{current_lr:.2e}")
 
@@ -146,11 +170,19 @@ def evaluate(model, loader, criterion, device, epoch_idx, total_epochs, split="V
     model.eval()
     total_loss, total_correct, total = 0.0, 0, 0
 
-    pbar = tqdm(loader, desc=f"{split}  {epoch_idx+1}/{total_epochs}", ncols=100)
+    pbar = tqdm(loader, desc=f"{split}  {epoch_idx+1}/{total_epochs}", ncols=110)
     for images, labels in pbar:
-        images, labels = images.to(device), labels.to(device)
-        outputs = model(images)
-        loss = criterion(outputs, labels)
+        images = images.to(device, non_blocking=True)
+        labels = torch.as_tensor(labels, device=device)
+
+        if device.type == "cuda":
+            images = images.to(memory_format=torch.channels_last)
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+        else:
+            outputs = model(images)
+            loss = criterion(outputs, labels)
 
         batch_size = labels.size(0)
         total_loss += loss.item() * batch_size
@@ -166,18 +198,62 @@ def evaluate(model, loader, criterion, device, epoch_idx, total_epochs, split="V
 
 
 # ----------------------------
+# Plotting
+# ----------------------------
+def plot_training_curves(metrics, out_dir: str, total_epochs: int):
+    os.makedirs(out_dir, exist_ok=True)
+    epochs = range(1, len(metrics["train_acc"]) + 1)
+
+    plt.figure(figsize=(10, 7))
+
+    # Accuracy subplot
+    plt.subplot(2, 1, 1)
+    plt.plot(epochs, metrics["train_acc"], label="Train Acc")
+    plt.plot(epochs, metrics["val_acc"], label="Val Acc")
+    plt.ylabel("Accuracy")
+    plt.xlim(1, total_epochs)
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="lower right")
+    plt.title("Training Curves")
+
+    # Loss subplot
+    plt.subplot(2, 1, 2)
+    plt.plot(epochs, metrics["train_loss"], label="Train Loss")
+    plt.plot(epochs, metrics["val_loss"], label="Val Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.xlim(1, total_epochs)
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="upper right")
+
+    out_path = os.path.join(out_dir, "training_curves.png")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+    print(f"[INFO] Saved training curves to: {out_path}")
+
+
+# ----------------------------
 # Main
 # ----------------------------
 def main():
-    with open("convnext_base_cpu_train_config.json", "r") as f:
+    with open("convnext_base_config.json", "r") as f:
         config = json.load(f)
 
     torch.manual_seed(config.get("seed", 42))
-    device = torch.device("cpu")
 
-    dl_train, dl_val, dl_test = build_dataloaders(config)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        print("CUDA is available!")
+        torch.backends.cudnn.benchmark = True  # speed on fixed-size inputs
 
-    model = build_model(num_classes=2).to(device)
+    dl_train, dl_val, dl_test = build_dataloaders(config, device)
+
+    model = build_model(num_classes=2)
+    if device.type == "cuda":
+        model = model.to(device, memory_format=torch.channels_last)
+    else:
+        model = model.to(device)
 
     # freeze backbone initially
     for name, param in model.named_parameters():
@@ -189,8 +265,10 @@ def main():
                             lr=3e-4, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=config["epochs"])
 
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+
     best_val_acc = 0.0
-    metrics = {"train_acc": [], "val_acc": []}
+    metrics = {"train_acc": [], "val_acc": [], "train_loss": [], "val_loss": []}
 
     for epoch in range(config["epochs"]):
         if epoch == config["warmup_epochs"]:
@@ -201,15 +279,18 @@ def main():
             scheduler = CosineAnnealingLR(optimizer, T_max=config["epochs"] - epoch)
             print(f"[INFO] Unfroze all layers at epoch {epoch}")
 
-        train_loss, train_acc = train_one_epoch(model, dl_train, criterion, optimizer, device, epoch, config["epochs"])
+        train_loss, train_acc = train_one_epoch(model, dl_train, criterion, optimizer, device, scaler, epoch, config["epochs"])
         val_loss, val_acc = evaluate(model, dl_val, criterion, device, epoch, config["epochs"], split="Val")
         scheduler.step()
 
         metrics["train_acc"].append(train_acc)
         metrics["val_acc"].append(val_acc)
+        metrics["train_loss"].append(train_loss)
+        metrics["val_loss"].append(val_loss)
 
         print(f"Epoch {epoch+1}/{config['epochs']} "
-              f"Train Acc: {train_acc:.4f} Val Acc: {val_acc:.4f}")
+              f"Train Acc: {train_acc:.4f} Val Acc: {val_acc:.4f} | "
+              f"Train Loss: {train_loss:.4f} Val Loss: {val_loss:.4f}")
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -221,6 +302,9 @@ def main():
     # Final test evaluation
     test_loss, test_acc = evaluate(model, dl_test, criterion, device, config["epochs"]-1, config["epochs"], split="Test")
     print(f"Test Accuracy: {test_acc:.4f}")
+
+    # Plot curves at the end
+    plot_training_curves(metrics, out_dir="pretrained", total_epochs=config["epochs"])
 
 
 if __name__ == "__main__":
