@@ -13,8 +13,8 @@ from pathlib import Path
 
 def main():
     repo_root = Path(__file__).parent.resolve()
-    app_file = repo_root / "gui" / "gui_app.py"
-
+    app_file = repo_root / "application" / "gui_app.py"
+    
     if not app_file.exists():
         print(f"❌ GUI app not found at: {app_file}")
         sys.exit(1)

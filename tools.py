@@ -1,22 +1,47 @@
+#!/usr/bin/env python3
 import os
+import re
 import zipfile
+from pathlib import Path
+from typing import Iterable, List
 
-def combine_and_extract(part1_path, part2_path, extract_to="training/dataset/ships_in_satellite_imagery"):
-    combined_zip = "combined_temp.zip"
+_CHUNK = 8 * 1024 * 1024  # 8 MiB
 
-    # Combine the two parts
-    with open(combined_zip, 'wb') as out_file:
-        for part in [part1_path, part2_path]:
-            with open(part, 'rb') as p:
-                out_file.write(p.read())
 
-    # Extract the combined zip
-    with zipfile.ZipFile(combined_zip, 'r') as zip_ref:
-        os.makedirs(extract_to, exist_ok=True)
-        zip_ref.extractall(extract_to)
+def validate_parts(parts: Iterable[Path]) -> bool:
+    return all(Path(p).exists() for p in parts)
 
-    os.remove(combined_zip)
-    print(f"✅ Extraction complete to '{extract_to}/'.")
 
-def validate_parts(part1, part2):
-    return os.path.exists(part1) and os.path.exists(part2)
+def _sorted_parts(parts: Iterable[Path]) -> List[Path]:
+    def num(p: Path):
+        m = re.search(r"_part(\d+)\.zip$", p.name)
+        return int(m.group(1)) if m else 10**9
+    return sorted(map(Path, parts), key=num)
+
+
+def combine_and_extract(parts: Iterable[Path], extract_to: Path, combined_zip_path: Path) -> None:
+    parts = _sorted_parts(parts)
+    extract_to = Path(extract_to)
+    combined_zip_path = Path(combined_zip_path)
+    extract_to.mkdir(parents=True, exist_ok=True)
+    combined_zip_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # combine
+    with open(combined_zip_path, "wb") as out:
+        for p in parts:
+            with open(p, "rb") as f:
+                while True:
+                    buf = f.read(_CHUNK)
+                    if not buf:
+                        break
+                    out.write(buf)
+
+    # extract
+    with zipfile.ZipFile(combined_zip_path, "r") as z:
+        z.extractall(extract_to)
+
+    # cleanup
+    try:
+        os.remove(combined_zip_path)
+    except OSError:
+        pass

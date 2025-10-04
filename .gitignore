@@ -2,10 +2,16 @@
 training/dataset/ships_in_satellite_imagery
 
 # Ignore pretrained network
-training/pretrained
+training/pretrained/*
+!training/pretrained/models_bundle_part1.zip
+!training/pretrained/models_bundle_part2.zip
+!training/pretrained/models_bundle_part3.zip
+!training/pretrained/models_bundle_part4.zip
+!training/pretrained/models_bundle_part5.zip
 
 # Ignore everything inside downloads
-downloads/*
+downloads/raw/*
+downloads/supersampled/*
 !downloads/raw/.gitkeep
 !downloads/supersampled/.gitkeep
 
@@ -13,4 +19,4 @@ downloads/*
 venv
 
 # Ignore the __pycache__
-gui/__pycache__
+application/__pycache__
