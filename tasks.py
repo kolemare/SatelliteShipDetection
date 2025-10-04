@@ -1,5 +1,6 @@
 from invoke import task
 from tools import combine_and_extract, validate_parts
+import gui as graphical_interface
 
 @task
 def extract(c):
@@ -15,3 +16,9 @@ def extract(c):
         combine_and_extract(part1, part2, extract_dir)
     else:
         print("❌ Missing one or both zip parts. Please check the files.")
+
+
+@task
+def gui(c):
+    #Run GUI
+    graphical_interface.main()

@@ -6,9 +6,14 @@ training/pretrained
 
 # Ignore everything inside downloads
 downloads/*
+!downloads/raw/.gitkeep
+!downloads/supersampled/.gitkeep
 
 # But do not ignore .gitkeep
 !downloads/.gitkeep
 
 # Ignore the virtual environment
 venv
+
+# Ignore the __pycache__
+gui/__pycache__
