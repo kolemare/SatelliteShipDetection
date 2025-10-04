@@ -1,7 +1,9 @@
-# Ignore the extracted dataset
-training/dataset/ships_in_satellite_imagery
+# Ignore extracted datasets
+training/dataset/*
+!training/dataset/ships_in_satellite_imagery_part1.zip
+!training/dataset/ships_in_satellite_imagery_part2.zip
 
-# Ignore pretrained network
+# Ignore extracted pretrained network
 training/pretrained/*
 !training/pretrained/models_bundle_part1.zip
 !training/pretrained/models_bundle_part2.zip
@@ -11,9 +13,9 @@ training/pretrained/*
 
 # Ignore everything inside downloads
 downloads/raw/*
-downloads/supersampled/*
+downloads/upscaled/*
 !downloads/raw/.gitkeep
-!downloads/supersampled/.gitkeep
+!downloads/upscaled/.gitkeep
 
 # Ignore the virtual environment
 venv
