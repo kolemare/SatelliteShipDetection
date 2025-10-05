@@ -4,6 +4,9 @@ Streamlit GUI
 - Select an AOI on a map (EOX Sentinel-2, Esri, OSM)
 - Download XYZ tiles and stitch them into a raw image (downloads/raw/)
 - Automatically run Real-ESRGAN x4 super-resolution (downloads/upscaled/)
+- Run ConvNeXt-based ship detection on RAW & UPSCALED and save overlays:
+    results/raw/<name>_det.png
+    results/upscaled/<name>_det.png
 """
 
 from __future__ import annotations
@@ -15,10 +18,13 @@ from streamlit_folium import st_folium
 import folium
 from folium.plugins import Draw
 
-# internal modules
+# internal modules (must exist in your repo)
 from providers import ProviderCatalog, ProviderKey
 from tiling import AOIRequest, TileStitcher, save_output_image
 from RRDBNet import SuperSampler
+
+# our inference module
+from ConvNextInference import detect_and_draw
 
 
 # =========================
@@ -30,25 +36,40 @@ class AppConfig:
     downloads_root: Path
     raw_dir: Path
     upscaled_dir: Path
+    results_root: Path
+    results_raw: Path
+    results_up: Path
+    ckpt_path: Path
 
     @classmethod
     def from_repo(cls) -> "AppConfig":
-        repo_root = Path(__file__).resolve().parents[1]
+        repo_root = Path(__file__).resolve().parents[1]  # this file's directory
         downloads_root = repo_root / "downloads"
         raw_dir = downloads_root / "raw"
         upscaled_dir = downloads_root / "upscaled"
 
+        results_root = repo_root / "results"
+        results_raw = results_root / "raw"
+        results_up = results_root / "upscaled"
+
+        # model checkpoint (from your training script)
+        ckpt_path = repo_root / "training" / "pretrained" / "ConvNext" / "convnext_ships.pt"
+        print("AAA " + str(ckpt_path))
+
         raw_dir.mkdir(parents=True, exist_ok=True)
         upscaled_dir.mkdir(parents=True, exist_ok=True)
+        results_raw.mkdir(parents=True, exist_ok=True)
+        results_up.mkdir(parents=True, exist_ok=True)
 
-        return cls(repo_root, downloads_root, raw_dir, upscaled_dir)
+        return cls(repo_root, downloads_root, raw_dir, upscaled_dir,
+                   results_root, results_raw, results_up, ckpt_path)
 
 
 # =========================
 # Map component
 # =========================
 class MapView:
-    """Encapsulates Folium map + draw plugin + provider base layer."""
+    """Folium map + draw plugin + provider base layer."""
     def __init__(self, provider, default_center=(20, 0), default_zoom=3):
         self.provider = provider
         self.default_center = default_center
@@ -122,23 +143,30 @@ class AppController:
         jpg_q = st.sidebar.slider("JPG quality", 1, 95, 90)
         out_name = st.sidebar.text_input("Output file name (optional)", "")
 
-        st.sidebar.markdown("---")
-        go_btn = st.sidebar.button("⬇️ Download & Upscale AOI (Real-ESRGAN x4)")
+        st.sidebar.markdown("### Detection")
+        stride = st.sidebar.select_slider("Sliding-window stride", options=[56, 64, 96, 112, 128, 160, 192], value=112)
+        thresh = st.sidebar.slider("Ship threshold", 0.1, 0.95, 0.5, 0.05)
 
-        return provider, zoom, out_fmt, jpg_q, out_name, go_btn
+        st.sidebar.markdown("---")
+        go_btn = st.sidebar.button("⬇️ Download, Upscale & Detect")
+
+        return provider, zoom, out_fmt, jpg_q, out_name, stride, thresh, go_btn
 
     def run(self):
-        st.set_page_config(page_title="AOI Downloader", layout="wide")
-        st.title("🛰️ Satellite AOI Downloader + Real-ESRGAN x4 Upscaling")
+        st.set_page_config(page_title="AOI Downloader + Ship Detection", layout="wide")
+        st.title("🛰️ AOI Downloader → Real-ESRGAN x4 → ConvNeXt Ship Detection")
 
-        provider, zoom, out_fmt, jpg_q, out_name, go_btn = self.sidebar()
+        provider, zoom, out_fmt, jpg_q, out_name, stride, thresh, go_btn = self.sidebar()
 
         st.markdown(
             """
             **Instructions:**  
-            - Pan/zoom the map.  
-            - Use the **rectangle** tool (🟥 icon) to draw your AOI.  
-            - Click **Download & Upscale AOI** in the sidebar.  
+            1. Draw a rectangle (🟥) on the map.  
+            2. Click **Download, Upscale & Detect**.  
+            3. Outputs:  
+               - Raw image → `downloads/raw/`  
+               - Upscaled image → `downloads/upscaled/`  
+               - Detections → `results/raw/` and `results/upscaled/`
             """
         )
 
@@ -146,6 +174,10 @@ class AppController:
         draw_state = map_view.render()
 
         if go_btn:
+            if not self.cfg.ckpt_path.exists():
+                st.error(f"Missing checkpoint: {self.cfg.ckpt_path}")
+                return
+
             bbox = self._extract_bbox(draw_state)
             if not bbox:
                 st.error("Please draw a rectangle first.")
@@ -170,22 +202,54 @@ class AppController:
                 progress.progress(min(100, int(frac * 100)))
 
             try:
-                # --- Download & Stitch ---
+                # ---- Download & Stitch ----
                 stitcher = TileStitcher(tile_size=provider.tile_size)
                 stitched = stitcher.stitch(aoi, progress_cb=_cb)
-
                 raw_path = save_output_image(stitched, aoi, self.cfg.raw_dir)
+
                 st.success(f"Saved RAW image: {raw_path}")
                 st.image(str(raw_path), caption="Raw Download", use_column_width=True)
 
+                # ---- Upscale ----
+                st.info("🔼 Upscaling with Real-ESRGAN x4 …")
                 sr = SuperSampler()
                 upscaled_path = sr.process_image(raw_path, self.cfg.upscaled_dir)
-
                 st.success(f"Upscaled image saved: {upscaled_path}")
                 st.image(str(upscaled_path), caption="Upscaled (Real-ESRGAN x4)", use_column_width=True)
 
+                # ---- Detection RAW ----
+                raw_out = self.cfg.results_raw / f"{Path(raw_path).stem}_det.png"
+                st.info("🚢 Detecting ships on RAW …")
+                n_raw = detect_and_draw(
+                    image_path=Path(raw_path),
+                    ckpt_path=self.cfg.ckpt_path,
+                    out_path=raw_out,
+                    stride=stride,
+                    prob_thresh=thresh,
+                )
+                st.success(f"RAW detections: {n_raw} → {raw_out.name}")
+                st.image(str(raw_out), caption=f"Detections on RAW ({n_raw})", use_column_width=True)
+
+                # ---- Detection UPSCALED ----
+                up_out = self.cfg.results_up / f"{Path(upscaled_path).stem}_det.png"
+                st.info("🚢 Detecting ships on UPSCALED …")
+                n_up = detect_and_draw(
+                    image_path=Path(upscaled_path),
+                    ckpt_path=self.cfg.ckpt_path,
+                    out_path=up_out,
+                    stride=stride,
+                    prob_thresh=thresh,
+                )
+                st.success(f"UPSCALED detections: {n_up} → {up_out.name}")
+                st.image(str(up_out), caption=f"Detections on UPSCALED ({n_up})", use_column_width=True)
+
+                # ---- Downloads ----
                 with open(upscaled_path, "rb") as f:
-                    st.download_button("Download Upscaled Image", f, file_name=upscaled_path.name)
+                    st.download_button("Download Upscaled Image", f, file_name=Path(upscaled_path).name, key="dl_up_image")
+                with open(raw_out, "rb") as f:
+                    st.download_button("Download RAW Detections", f, file_name=raw_out.name, key="dl_raw_det")
+                with open(up_out, "rb") as f:
+                    st.download_button("Download UPSCALED Detections", f, file_name=up_out.name, key="dl_up_det")
 
             except Exception as e:
                 st.error(f"❌ Error: {e}")

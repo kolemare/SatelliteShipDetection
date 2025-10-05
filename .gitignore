@@ -17,6 +17,12 @@ downloads/upscaled/*
 !downloads/raw/.gitkeep
 !downloads/upscaled/.gitkeep
 
+# Ignore everything inside downloads
+results/raw/*
+results/upscaled/*
+!results/raw/.gitkeep
+!results/upscaled/.gitkeep
+
 # Ignore the virtual environment
 venv
 
