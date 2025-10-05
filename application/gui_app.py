@@ -115,7 +115,7 @@ class AppController:
         )
         provider = self.catalog.get(sel)
 
-        zoom = st.sidebar.slider("Zoom (higher = more detail)", 1, provider.max_zoom, min(12, provider.max_zoom))
+        zoom = st.sidebar.slider("Zoom (higher = more detail)", 1, provider.max_zoom, min(15, provider.max_zoom))
 
         st.sidebar.markdown("### Output")
         out_fmt = st.sidebar.radio("Format", ["PNG", "JPG"], index=0)
