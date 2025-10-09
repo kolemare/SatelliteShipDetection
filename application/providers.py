@@ -4,7 +4,6 @@ from enum import Enum
 
 
 class ProviderKey(str, Enum):
-    EOX = "eox"
     ESRI = "esri"
     OSM = "osm"
 
@@ -29,13 +28,6 @@ class ProviderCatalog:
                 tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 attribution="Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
                 max_zoom=19,
-            ),
-            ProviderKey.EOX: Provider(
-                key=ProviderKey.EOX,
-                name="EOX Sentinel-2 Cloudless (2019)",
-                tiles="https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2019_3857/default/g/{z}/{y}/{x}.jpg",
-                attribution="© EOX Sentinel-2 Cloudless (2019)",
-                max_zoom=17,
             ),
             ProviderKey.OSM: Provider(
                 key=ProviderKey.OSM,

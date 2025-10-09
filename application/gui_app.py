@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Streamlit GUI (compact, no-scroll workflow)
-- Map on the left (EOX/Esri/OSM + Draw rectangle)
+- Map on the left (Esri/OSM + Draw rectangle)
 - Progress & logs on the right (no side-scrolling needed)
 - Below: two columns -> Left = input (RAW or UPSCALED), Right = detection overlay
 - Checkbox "RealESRGAN":
@@ -129,7 +129,7 @@ class AppController:
         st.sidebar.markdown("### Provider & Quality")
         sel = st.sidebar.selectbox(
             "Provider",
-            options=[ProviderKey.ESRI, ProviderKey.EOX, ProviderKey.OSM],
+            options=[ProviderKey.ESRI, ProviderKey.OSM],
             index=0,
             format_func=lambda k: self.catalog.get(k).name,
         )
