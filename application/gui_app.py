@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Streamlit GUI
-- Select an AOI on a map (EOX Sentinel-2, Esri, OSM)
-- Download XYZ tiles and stitch them into a raw image (downloads/raw/)
-- Automatically run Real-ESRGAN x4 super-resolution (downloads/upscaled/)
-- Run ConvNeXt-based ship detection on RAW & UPSCALED and save overlays:
-    results/raw/<name>_det.png
-    results/upscaled/<name>_det.png
+Streamlit GUI (compact, no-scroll workflow)
+- Map on the left (EOX/Esri/OSM + Draw rectangle)
+- Progress & logs on the right (no side-scrolling needed)
+- Below: two columns -> Left = input (RAW or UPSCALED), Right = detection overlay
+- Checkbox "RealESRGAN":
+    * CHECKED  -> save only UPSCALED image to downloads/, run detection on UPSCALED
+    * UNCHECKED-> save only RAW image to downloads/, run detection on RAW
 """
 
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
+import os
 
 import streamlit as st
 from streamlit_folium import st_folium
@@ -22,8 +23,6 @@ from folium.plugins import Draw
 from providers import ProviderCatalog, ProviderKey
 from tiling import AOIRequest, TileStitcher, save_output_image
 from RRDBNet import SuperSampler
-
-# our inference module
 from ConvNextInference import detect_and_draw
 
 
@@ -43,7 +42,8 @@ class AppConfig:
 
     @classmethod
     def from_repo(cls) -> "AppConfig":
-        repo_root = Path(__file__).resolve().parents[1]  # this file's directory
+        # Repo root = parent of this file's directory
+        repo_root = Path(__file__).resolve().parents[1]
         downloads_root = repo_root / "downloads"
         raw_dir = downloads_root / "raw"
         upscaled_dir = downloads_root / "upscaled"
@@ -52,9 +52,7 @@ class AppConfig:
         results_raw = results_root / "raw"
         results_up = results_root / "upscaled"
 
-        # model checkpoint (from your training script)
         ckpt_path = repo_root / "training" / "pretrained" / "ConvNext" / "convnext_ships.pt"
-        print("AAA " + str(ckpt_path))
 
         raw_dir.mkdir(parents=True, exist_ok=True)
         upscaled_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +93,8 @@ class MapView:
             edit_options={"edit": True, "remove": True},
         ).add_to(m)
 
-        return st_folium(m, height=650, width=None, returned_objects=["last_active_drawing", "all_drawings"])
+        # Keep height modest to avoid page scrolling; width auto-fits
+        return st_folium(m, height=560, width=None, returned_objects=["last_active_drawing", "all_drawings"])
 
 
 # =========================
@@ -139,39 +138,46 @@ class AppController:
         zoom = st.sidebar.slider("Zoom (higher = more detail)", 1, provider.max_zoom, min(15, provider.max_zoom))
 
         st.sidebar.markdown("### Output")
-        out_fmt = st.sidebar.radio("Format", ["PNG", "JPG"], index=0)
+        out_fmt = st.sidebar.radio("Format", ["PNG", "JPG"], index=0, horizontal=True)
         jpg_q = st.sidebar.slider("JPG quality", 1, 95, 90)
         out_name = st.sidebar.text_input("Output file name (optional)", "")
 
-        st.sidebar.markdown("### Detection")
+        st.sidebar.markdown("### Processing")
+        real_esrgan = st.sidebar.checkbox("RealESRGAN", value=True,
+                                          help="If checked: upscale ×4 and detect on UPSCALED (only upscaled is kept). If unchecked: detect on RAW (only raw is kept).")
         stride = st.sidebar.select_slider("Sliding-window stride", options=[56, 64, 96, 112, 128, 160, 192], value=112)
         thresh = st.sidebar.slider("Ship threshold", 0.1, 0.95, 0.5, 0.05)
 
         st.sidebar.markdown("---")
-        go_btn = st.sidebar.button("⬇️ Download, Upscale & Detect")
+        go_btn = st.sidebar.button("⬇️ Download → (Optional) Upscale → 🚢 Detect", use_container_width=True)
 
-        return provider, zoom, out_fmt, jpg_q, out_name, stride, thresh, go_btn
+        return provider, zoom, out_fmt, jpg_q, out_name, real_esrgan, stride, thresh, go_btn
 
     def run(self):
-        st.set_page_config(page_title="AOI Downloader + Ship Detection", layout="wide")
-        st.title("🛰️ AOI Downloader → Real-ESRGAN x4 → ConvNeXt Ship Detection")
+        st.set_page_config(page_title="AOI Downloader + (RealESRGAN) + ConvNeXt Detection", layout="wide")
+        st.title("🛰️ AOI → (Real-ESRGAN x4) → 🚢 ConvNeXt Ship Detection")
 
-        provider, zoom, out_fmt, jpg_q, out_name, stride, thresh, go_btn = self.sidebar()
+        provider, zoom, out_fmt, jpg_q, out_name, real_esrgan, stride, thresh, go_btn = self.sidebar()
 
-        st.markdown(
-            """
-            **Instructions:**  
-            1. Draw a rectangle (🟥) on the map.  
-            2. Click **Download, Upscale & Detect**.  
-            3. Outputs:  
-               - Raw image → `downloads/raw/`  
-               - Upscaled image → `downloads/upscaled/`  
-               - Detections → `results/raw/` and `results/upscaled/`
-            """
-        )
+        # Compact instructions (no tall blocks)
+        st.caption("Draw a rectangle on the map, then click the action button in the sidebar. Below the map: "
+                   "Left = model input (RAW or UPSCALED), Right = detection overlay.")
 
-        map_view = MapView(provider=provider)
-        draw_state = map_view.render()
+        # --- TOP ROW: Map (left) + Progress panel (right) ---
+        top_left, top_right = st.columns([3, 2], gap="large")
+
+        with top_left:
+            map_view = MapView(provider=provider)
+            draw_state = map_view.render()
+
+        with top_right:
+            st.subheader("Progress")
+            status_area = st.empty()
+            progress_bar = st.progress(0)
+
+        # --- ACTION ---
+        input_image_path = None
+        result_image_path = None
 
         if go_btn:
             if not self.cfg.ckpt_path.exists():
@@ -195,66 +201,87 @@ class AppController:
                 provider_attr=provider.attribution
             )
 
-            st.info(f"📡 Fetching tiles @ z={aoi.zoom} from {provider.name} …")
-            progress = st.progress(0)
-
-            def _cb(frac):
-                progress.progress(min(100, int(frac * 100)))
+            def _tick(pct: int, msg: str):
+                progress_bar.progress(min(100, pct))
+                status_area.info(msg)
 
             try:
                 # ---- Download & Stitch ----
+                _tick(3, f"📡 Fetching tiles @ z={aoi.zoom} from {provider.name} …")
                 stitcher = TileStitcher(tile_size=provider.tile_size)
-                stitched = stitcher.stitch(aoi, progress_cb=_cb)
+                stitched = stitcher.stitch(aoi, progress_cb=lambda f: progress_bar.progress(min(100, int(3 + f * 40))))
+
+                _tick(45, "🧵 Writing RAW image …")
                 raw_path = save_output_image(stitched, aoi, self.cfg.raw_dir)
 
-                st.success(f"Saved RAW image: {raw_path}")
-                st.image(str(raw_path), caption="Raw Download", use_column_width=True)
+                # ---- Optional Upscale ----
+                if real_esrgan:
+                    _tick(55, "🔼 Upscaling with Real-ESRGAN x4 …")
+                    sr = SuperSampler()
+                    upscaled_path = sr.process_image(raw_path, self.cfg.upscaled_dir)
+                    input_image_path = Path(upscaled_path)
 
-                # ---- Upscale ----
-                st.info("🔼 Upscaling with Real-ESRGAN x4 …")
-                sr = SuperSampler()
-                upscaled_path = sr.process_image(raw_path, self.cfg.upscaled_dir)
-                st.success(f"Upscaled image saved: {upscaled_path}")
-                st.image(str(upscaled_path), caption="Upscaled (Real-ESRGAN x4)", use_column_width=True)
+                    # Delete RAW so only UPSCALED remains in downloads/
+                    try:
+                        os.remove(raw_path)
+                    except Exception:
+                        pass
 
-                # ---- Detection RAW ----
-                raw_out = self.cfg.results_raw / f"{Path(raw_path).stem}_det.png"
-                st.info("🚢 Detecting ships on RAW …")
-                n_raw = detect_and_draw(
-                    image_path=Path(raw_path),
+                    _tick(70, "🚢 Running detection on UPSCALED …")
+                    out_det = self.cfg.results_up / f"{Path(upscaled_path).stem}_det.png"
+                else:
+                    input_image_path = Path(raw_path)
+                    _tick(60, "🚢 Running detection on RAW …")
+                    out_det = self.cfg.results_raw / f"{Path(raw_path).stem}_det.png"
+
+                # ---- Detection ----
+                n_found = detect_and_draw(
+                    image_path=input_image_path,
                     ckpt_path=self.cfg.ckpt_path,
-                    out_path=raw_out,
+                    out_path=out_det,
                     stride=stride,
                     prob_thresh=thresh,
                 )
-                st.success(f"RAW detections: {n_raw} → {raw_out.name}")
-                st.image(str(raw_out), caption=f"Detections on RAW ({n_raw})", use_column_width=True)
+                result_image_path = out_det
+                _tick(95, f"✅ Detection complete: {n_found} ships")
 
-                # ---- Detection UPSCALED ----
-                up_out = self.cfg.results_up / f"{Path(upscaled_path).stem}_det.png"
-                st.info("🚢 Detecting ships on UPSCALED …")
-                n_up = detect_and_draw(
-                    image_path=Path(upscaled_path),
-                    ckpt_path=self.cfg.ckpt_path,
-                    out_path=up_out,
-                    stride=stride,
-                    prob_thresh=thresh,
-                )
-                st.success(f"UPSCALED detections: {n_up} → {up_out.name}")
-                st.image(str(up_out), caption=f"Detections on UPSCALED ({n_up})", use_column_width=True)
-
-                # ---- Downloads ----
-                with open(upscaled_path, "rb") as f:
-                    st.download_button("Download Upscaled Image", f, file_name=Path(upscaled_path).name, key="dl_up_image")
-                with open(raw_out, "rb") as f:
-                    st.download_button("Download RAW Detections", f, file_name=raw_out.name, key="dl_raw_det")
-                with open(up_out, "rb") as f:
-                    st.download_button("Download UPSCALED Detections", f, file_name=up_out.name, key="dl_up_det")
+                _tick(100, "✔️ Done")
 
             except Exception as e:
-                st.error(f"❌ Error: {e}")
-            finally:
-                progress.progress(100)
+                status_area.error(f"❌ Error: {e}")
+                progress_bar.progress(100)
+
+        # --- BOTTOM ROW: Input (left) | Result (right) ---
+        bottom_left, bottom_right = st.columns(2, gap="large")
+        with bottom_left:
+            st.markdown("#### Model Input")
+            if input_image_path and Path(input_image_path).exists():
+                st.image(str(input_image_path), use_column_width=True)
+                with open(input_image_path, "rb") as f:
+                    st.download_button(
+                        "Download Input Image",
+                        f,
+                        file_name=Path(input_image_path).name,
+                        key="dl_input_img",
+                        use_container_width=True
+                    )
+            else:
+                st.info("Input image will appear here.")
+
+        with bottom_right:
+            st.markdown("#### Detection Result")
+            if result_image_path and Path(result_image_path).exists():
+                st.image(str(result_image_path), use_column_width=True)
+                with open(result_image_path, "rb") as f:
+                    st.download_button(
+                        "Download Detection Overlay",
+                        f,
+                        file_name=Path(result_image_path).name,
+                        key="dl_det_img",
+                        use_container_width=True
+                    )
+            else:
+                st.info("Detection overlay will appear here.")
 
 
 # =========================
