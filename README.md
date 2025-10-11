@@ -198,7 +198,7 @@ Each image file is labeled directly in its filename prefix (`0__...png` for no-s
 - A plot of training curves (`training_curves.png`) shows convergence of loss and accuracy across train/val splits.
 
 <p align="center">
-  <img src="training/pretrained/ConvNext/training_curves.png" alt="Training Curves" width="600">
+  <img src="training/pretrained/training_curves.png" alt="Training Curves" width="600">
 </p>
 
 ---
