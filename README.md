@@ -266,15 +266,16 @@ The following images show the **Port of Shanghai**, the largest port in the worl
 
 ---
 
-### 🌊 Detection with Real-ESRGAN (Port of Algeciras, Spain)
+### 🌊 Detection with Real-ESRGAN (Ports: Algeciras, Spain & Victoria Harbour, Hong Kong)
 
-Comparison between RAW, UPSCALED (×4), and DETECTION result on the **Port of Algeciras**, one of Europe’s largest ports located in southern Spain.
+Comparison between RAW, UPSCALED (×4), and DETECTION results.
 
 <div align="center">
 
 | Raw Image | Upscaled ×4 | Detections on Upscaled |
 |------------|--------------|------------------------|
 | ![Port of Algeciras - Raw](results/port_of_aglericas_spain_raw.png) | ![Port of Algeciras - Upscaled](results/port_of_aglericas_spain_upscaled.png) | ![Port of Algeciras - Detections](results/port_of_aglericas_spain_upscaled_detections.png) |
+| ![Victoria Harbour - Raw](results/port_victoria_harbour_hong_kong_raw.png) | ![Victoria Harbour - Upscaled](results/port_victoria_harbour_hong_kong_upscaled.png) | ![Victoria Harbour - Detections](results/port_victoria_harbour_hong_kong_upscaled_detections.png) |
 
 </div>
 
