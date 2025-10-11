@@ -1,7 +1,7 @@
 # 🛰️ AOI Downloader & Ship Detection — Real-ESRGAN ×4 + ConvNeXt
 
 An interactive **Streamlit GUI** for selecting an **Area of Interest (AOI)** on a world map, downloading high-resolution map tiles, optionally **upscaling with Real-ESRGAN ×4**, and performing **ship detection** using a **ConvNeXt** model.  
-Designed for convenient visual analysis and dataset preparation.
+Designed for convenient visual analysis.
 
 ---
 
@@ -45,7 +45,6 @@ The UI is compact:
 - 🔼 Optional Real-ESRGAN ×4 super-resolution  
 - 🚢 ConvNeXt-based ship detection  
 - ⚙️ Adjustable stride and probability threshold  
-- 💾 Organized output folders (`downloads/`, `results/`)
 
 ---
 
@@ -63,11 +62,11 @@ repo_root/
 ├── training/
 │   ├── convnext_train.py          # Training script
 │   ├── convnext_base_config.json  # Training config (dataset path, epochs, etc.)
+│   ├── training_curves.png        # Accuracy/Loss curves (moved here)
 │   └── pretrained/
 │       ├── ConvNext/
 │       │   ├── convnext_ships.pt          # Trained ConvNeXt checkpoint
-│       │   ├── metrics.json               # Training metrics (accuracy/loss)
-│       │   └── training_curves.png        # Accuracy/Loss curves
+│       │   └── metrics.json               # Training metrics (accuracy/loss)
 │       │
 │       └── RealESRGAN/
 │           └── RealESRGAN_x4plus.pth      # Pretrained Real-ESRGAN weights
@@ -136,6 +135,10 @@ Run `invoke extract` to extract model weights and dataset.
    - **Left image:** model input (RAW or UPSCALED)  
    - **Right image:** detection overlay  
 
+### Recommended Zoom Levels ESRI
+- **With RealESRGAN enabled:** set **zoom = 15** (recommended).  
+- **Without RealESRGAN enabled:** set **zoom = 17** (recommended).
+
 ---
 
 ## 🧠 Model Details
@@ -195,10 +198,10 @@ Each image file is labeled directly in its filename prefix (`0__...png` for no-s
   `training/pretrained/ConvNext/convnext_ships.pt`
 - Metrics (accuracy/loss per epoch) are stored in:  
   `training/pretrained/ConvNext/metrics.json`
-- A plot of training curves (`training_curves.png`) shows convergence of loss and accuracy across train/val splits.
+- A plot of training curves (`training/training_curves.png`) shows convergence of loss and accuracy across train/val splits.
 
 <p align="center">
-  <img src="training/pretrained/training_curves.png" alt="Training Curves" width="600">
+  <img src="training/training_curves.png" alt="Training Curves" width="600">
 </p>
 
 ---
