@@ -10,6 +10,7 @@ training/pretrained/*
 !training/pretrained/models_bundle_part3.zip
 !training/pretrained/models_bundle_part4.zip
 !training/pretrained/models_bundle_part5.zip
+!training/pretrained/training_curves.png
 
 # Ignore everything inside downloads
 downloads/raw/*
