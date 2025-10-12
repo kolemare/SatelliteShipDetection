@@ -88,16 +88,14 @@ repo_root/
 
 **Windows (Cmd):**
 ```
-cd scripts
-create_venv.bat
+scripts/create_venv.bat
 call venv\Scripts\activate.bat
 ```
 
 **Linux / macOS (Bash):**
 ```
-cd scripts
-chmod +x create_venv.sh
-./create_venv.sh
+chmod +x scripts/create_venv.sh
+./scripts/create_venv.sh
 source venv/bin/activate
 ```
 
