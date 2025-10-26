@@ -18,6 +18,7 @@ Designed for convenient visual analysis.
 10. [Raw vs. RealESRGAN](#-raw-vs-realesrgan)
 11. [Results](#-results)
 12. [Output Directories](#-output-directories)
+13. [Going Lower Than Zoom 14 on Sentinel-2](#️-going-lower-than-zoom-14-on-sentinel-2)
 
 ---
 
@@ -296,6 +297,22 @@ Comparison between RAW, UPSCALED (×4), and DETECTION results.
 | ![Victoria Harbour - Raw](results/port_victoria_harbour_hong_kong_raw_sentinel.png) | ![Victoria Harbour - Upscaled](results/port_victoria_harbour_hong_kong_upscaled_sentinel.png) | ![Victoria Harbour - Detections](results/port_victoria_harbour_hong_kong_upscaled_detections_sentinel.png) |
 
 </div>
+
+---
+
+## 🛰️ Going Lower Than Zoom 14 on Sentinel-2
+
+When using Sentinel‑2 imagery below **zoom level 14**, the captured details become extremely coarse.  
+At such low resolutions, the visual information content is drastically reduced — each ship often occupies only a few pixels, making it nearly indistinguishable from background noise such as sea texture or sunlight reflections.
+
+As a result, **Real‑ESRGAN upscaling** cannot reconstruct meaningful detail from such sparse input — there simply isn’t enough signal for the model to “hallucinate” realistic structure.  
+Consequently, **ConvNeXt** also fails to recognize ships reliably, since the features it depends on (edges, textures, object shape) are not discernible at this scale.
+
+The image below demonstrates this limitation — **four ships** are visible in the open sea at **Sentinel‑2 zoom level 13**, yet the raw pixels lack sufficient clarity for confident detection:
+
+<p align="center">
+  <img src="results/4_ships_sentinel_2_zoom_13.png" alt="4 Ships Sentinel-2 Zoom 13" style="width:100%; max-width:100%;">
+</p>
 
 ---
 
