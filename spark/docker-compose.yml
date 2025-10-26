@@ -1,0 +1,209 @@
+services:
+  # --------- Metadata DB (Postgres) ---------
+  postgres:
+    image: postgres:16
+    container_name: spark_pg
+    environment:
+      POSTGRES_DB: aoi
+      POSTGRES_USER: aoi
+      POSTGRES_PASSWORD: aoi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aoi -d aoi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --------- Object Storage (MinIO, S3-compatible) ---------
+  minio:
+    image: minio/minio:latest
+    container_name: spark_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # (one-shot) Create bucket "aoi" after MinIO is healthy
+  minio-init:
+    image: minio/mc:latest
+    container_name: spark_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MC_HOST_minio: "http://minio:minio123@minio:9000"
+    entrypoint: >
+      /bin/sh -lc "
+      mc mb --ignore-existing minio/aoi &&
+      mc ls minio
+      "
+    restart: "no"
+
+  # --------- Kafka-compatible Queue (Redpanda) ---------
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: spark_redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+    ports:
+      - "9092:9092"     # Kafka in-cluster
+      - "19092:19092"   # Kafka external
+      - "9644:9644"     # Admin API
+    volumes:
+      - redpanda:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9644/v1/status/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # (one-shot) Create topic "aoi_jobs" after Redpanda is healthy
+  redpanda-init:
+    image: redpandadata/redpanda:latest
+    container_name: spark_redpanda_init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -lc "
+      rpk cluster info --brokers redpanda:9092 >/dev/null 2>&1 ||
+      { echo 'Redpanda not ready'; exit 1; };
+      rpk topic create aoi_jobs --brokers redpanda:9092 --if-not-exists;
+      rpk topic list --brokers redpanda:9092
+      "
+    restart: "no"
+
+  # --------- Spark Master (Apache official image) ---------
+  spark-master:
+    image: apache/spark:3.5.3
+    container_name: spark_master
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+    command: ["/opt/spark/bin/spark-class",
+              "org.apache.spark.deploy.master.Master",
+              "--host", "spark-master",
+              "--port", "7077",
+              "--webui-port", "8080"]
+    ports:
+      - "8080:8080"   # Spark master UI
+      - "7077:7077"   # Spark master RPC
+    volumes:
+      - spark-events:/opt/spark-events
+
+  # --------- Spark Worker (Apache official image) ---------
+  spark-worker-1:
+    image: apache/spark:3.5.3
+    container_name: spark_worker_1
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      # (optional) tweak cores/memory; defaults are fine for dev
+      # - SPARK_WORKER_CORES=4
+      # - SPARK_WORKER_MEMORY=2g
+    depends_on:
+      - spark-master
+    command: ["/opt/spark/bin/spark-class",
+              "org.apache.spark.deploy.worker.Worker",
+              "spark://spark-master:7077",
+              "--webui-port", "8081"]
+    ports:
+      - "8081:8081"   # worker UI
+    volumes:
+      - spark-events:/opt/spark-events
+
+  # --------- Spark History Server (reads event logs) ---------
+  spark-history:
+    image: apache/spark:3.5.3
+    container_name: spark_history
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=/opt/spark-events
+    depends_on:
+      - spark-master
+    command: ["/opt/spark/bin/spark-class",
+              "org.apache.spark.deploy.history.HistoryServer"]
+    ports:
+      - "18080:18080"
+    volumes:
+      - spark-events:/opt/spark-events
+
+  # --------- Spark Streaming App (your code) ---------
+  spark-app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: spark_app
+    depends_on:
+      spark-master:
+        condition: service_started
+      spark-worker-1:
+        condition: service_started
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      # Kafka / Redpanda
+      - KAFKA_BROKER=redpanda:9092
+      - KAFKA_TOPIC=aoi_jobs
+      - KAFKA_GROUP=aoi_processor
+      # Postgres
+      - DB_URL=postgresql+psycopg2://aoi:aoi@postgres:5432/aoi
+      # MinIO (S3A)
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=minio
+      - S3_SECRET_KEY=minio123
+      - S3_BUCKET=aoi
+      # Spark submit conf for S3A + Kafka connector (downloaded at runtime)
+      - SPARK_MASTER=spark://spark-master:7077
+      - APP_MAIN=/opt/app/main.py
+    command: >
+      bash -lc "
+      mkdir -p /opt/spark-events &&
+      /opt/spark/bin/spark-submit
+      --master $$SPARK_MASTER
+      --conf spark.eventLog.enabled=true
+      --conf spark.eventLog.dir=/opt/spark-events
+      --conf spark.history.fs.logDirectory=/opt/spark-events
+      --conf spark.hadoop.fs.s3a.endpoint=$$S3_ENDPOINT
+      --conf spark.hadoop.fs.s3a.access.key=$$S3_ACCESS_KEY
+      --conf spark.hadoop.fs.s3a.secret.key=$$S3_SECRET_KEY
+      --conf spark.hadoop.fs.s3a.path.style.access=true
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.hadoop:hadoop-aws:3.3.6,com.amazonaws:aws-java-sdk-bundle:1.12.671
+      $$APP_MAIN
+      "
+    volumes:
+      - spark-events:/opt/spark-events
+
+volumes:
+  pgdata:
+  minio:
+  redpanda:
+  spark-events:
