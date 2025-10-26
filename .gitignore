@@ -29,3 +29,6 @@ venv
 
 # Ignore the __pycache__
 application/__pycache__
+
+#ignore the .streamlit directory
+application/.streamlit/
