@@ -206,17 +206,11 @@ Each image file is labeled directly in its filename prefix (`0__...png` for no-s
 
 ## 🔼 Real-ESRGAN Integration
 
-**Real-ESRGAN (Real-Enhanced Super-Resolution Generative Adversarial Network)** is a high-fidelity image upscaling method based on the **RRDBNet** backbone (Residual-in-Residual Dense Blocks).  
-It reconstructs fine textures and realistic edges from low-resolution or compressed imagery.
-
-In this project:
-- When **RealESRGAN** is enabled in the GUI, every downloaded AOI is passed through a ×4 super-resolution network before detection.  
-- The upscaled image is saved to `downloads/upscaled/`, while the raw image is discarded.  
-- The ship detector runs exclusively on the upscaled output, often improving small-object recognition.  
-- Real-ESRGAN automatically uses CUDA if available, otherwise falls back to CPU.
-
-**Checkpoint used:**  
-`training/pretrained/RealESRGAN/RealESRGAN_x4plus.pth`
+- Backbone: **RRDBNet (Residual-in-Residual Dense Blocks)**  
+- Used when upscaling is selected (once or twice).  
+- Saves to `downloads/upscaled/` and runs detection on the final upscaled image.  
+- **Checkpoint:** `training/pretrained/RealESRGAN/RealESRGAN_x4plus.pth`  
+- CUDA if available; CPU fallback otherwise.
 
 ---
 
@@ -253,17 +247,15 @@ Thus, the visible size of ships inside this crop directly affects the network’
 
 ---
 
-## 🖼️ Results
+## 🖼️ Results — ESRI
 
 ### ⚓ Detection on RAW (Port of Shanghai)
 
-The following images show the **Port of Shanghai**, the largest port in the world, located at the Yangtze River Delta, China.
+**Input Image:**  
+![Port of Shanghai - Raw](results/port_of_shangai_raw_esri.png)
 
-**Input Image:**
-![Port of Shanghai - Raw](results/port_of_shangai_z17_esri_raw.png)
-
-**Detections:**
-![Port of Shanghai - Detections](results/port_of_shangai_z17_esri_raw_detections.png)
+**Detections:**  
+![Port of Shanghai - Detections](results/port_of_shangai_raw_detections_esri.png)
 
 ---
 
@@ -274,9 +266,34 @@ Comparison between RAW, UPSCALED (×4), and DETECTION results.
 <div align="center">
 
 | Raw Image | Upscaled ×4 | Detections on Upscaled |
-|------------|--------------|------------------------|
-| ![Port of Algeciras - Raw](results/port_of_aglericas_spain_raw.png) | ![Port of Algeciras - Upscaled](results/port_of_aglericas_spain_upscaled.png) | ![Port of Algeciras - Detections](results/port_of_aglericas_spain_upscaled_detections.png) |
-| ![Victoria Harbour - Raw](results/port_victoria_harbour_hong_kong_raw.png) | ![Victoria Harbour - Upscaled](results/port_victoria_harbour_hong_kong_upscaled.png) | ![Victoria Harbour - Detections](results/port_victoria_harbour_hong_kong_upscaled_detections.png) |
+|---|---|---|
+| ![Port of Algeciras - Raw](results/port_of_aglericas_spain_raw_esri.png) | ![Port of Algeciras - Upscaled](results/port_of_aglericas_spain_upscaled_esri.png) | ![Port of Algeciras - Detections](results/port_of_aglericas_spain_upscaled_detections_esri.png) |
+| ![Victoria Harbour - Raw](results/port_victoria_harbour_hong_kong_raw_esri.png) | ![Victoria Harbour - Upscaled](results/port_victoria_harbour_hong_kong_upscaled_esri.png) | ![Victoria Harbour - Detections](results/port_victoria_harbour_hong_kong_upscaled_detections_esri.png) |
+
+</div>
+
+---
+
+## 🖼️ Results — Sentinel-2
+
+### ⚓ Detection on RAW (Port of Shanghai)
+
+**Input Image:**  
+![Port of Shanghai - Raw](results/port_of_shangai_raw_sentinel.png)
+
+**Detections:**  
+![Port of Shanghai - Detections](results/port_of_shangai_raw_detections_sentinel.png)
+
+---
+
+### 🌊 Detection with Real-ESRGAN (Ports: Algeciras, Spain & Victoria Harbour, Hong Kong)
+
+<div align="center">
+
+| Raw Image | Upscaled ×4 | Detections on Upscaled |
+|---|---|---|
+| ![Port of Algeciras - Raw](results/port_of_aglericas_spain_raw_sentinel.png) | ![Port of Algeciras - Upscaled](results/port_of_aglericas_spain_upscaled_sentinel.png) | ![Port of Algeciras - Detections](results/port_of_aglericas_spain_upscaled_detections_sentinel.png) |
+| ![Victoria Harbour - Raw](results/port_victoria_harbour_hong_kong_raw_sentinel.png) | ![Victoria Harbour - Upscaled](results/port_victoria_harbour_hong_kong_upscaled_sentinel.png) | ![Victoria Harbour - Detections](results/port_victoria_harbour_hong_kong_upscaled_detections_sentinel.png) |
 
 </div>
 
@@ -285,8 +302,10 @@ Comparison between RAW, UPSCALED (×4), and DETECTION results.
 ## 📂 Output Directories
 
 | Path | Contents |
-|------|-----------|
-| `downloads/raw/` | Stitched AOIs (kept only if RealESRGAN is **off**) |
-| `downloads/upscaled/` | ×4 super-resolved AOIs (kept only if **on**) |
-| `results/raw/` | Ship detection overlays for RAW images |
-| `results/upscaled/` | Ship detection overlays for UPSCALED images |
+|---|---|
+| `downloads/raw/` | Stitched AOIs (kept only if **no upscaling**) |
+| `downloads/upscaled/` | ×4 (or ×4×4 final) AOIs when upscaling is selected |
+| `results/raw/` | Detection overlays for **RAW** images |
+| `results/upscaled/` | Detection overlays for **UPSCALED** images |
+
+--- 
