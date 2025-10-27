@@ -32,3 +32,7 @@ application/__pycache__
 
 #ignore the .streamlit directory
 application/.streamlit/
+
+#Ignore the pretrained networks for Docker
+spark/app/convnext_ships.pt
+spark/app/RealESRGAN_x4plus.pth

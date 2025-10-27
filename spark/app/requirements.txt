@@ -1,4 +1,39 @@
+# ========================
+# Core dependencies
+# ========================
 sqlalchemy
 psycopg2-binary
 minio
 shapely
+requests
+
+# ========================
+# Spark and streaming
+# ========================
+pyspark==4.0.1
+
+# ========================
+# ML / Image processing
+# ========================
+torch
+torchvision
+pillow
+numpy
+opencv-python
+
+# ========================
+# Real-ESRGAN and dependencies
+# ========================
+basicsr
+realesrgan
+
+# ========================
+# Web / GUI (optional)
+# ========================
+streamlit
+streamlit-folium
+folium
+mercantile
+tqdm
+matplotlib
+invoke
