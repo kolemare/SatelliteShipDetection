@@ -202,6 +202,25 @@ services:
     volumes:
       - spark-events:/opt/spark-events
 
+  # --------- Web UI: AOI Submitter (Streamlit) ---------
+  aoi-submit:
+    build:
+      context: ./gui
+      dockerfile: Dockerfile
+    container_name: spark_aoi_submit
+    ports:
+      - "8501:8501"
+    environment:
+      # In-cluster endpoints:
+      DB_URL: postgresql+psycopg2://aoi:aoi@postgres:5432/aoi
+      KAFKA_BROKER: redpanda:9092
+      KAFKA_TOPIC: aoi_jobs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
 volumes:
   pgdata:
   minio:
