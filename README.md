@@ -19,6 +19,7 @@ Designed for convenient visual analysis.
 11. [Results](#-results)
 12. [Output Directories](#-output-directories)
 13. [Going Lower Than Zoom 14 on Sentinel-2](#️-going-lower-than-zoom-14-on-sentinel-2)
+14. [Spark Integration](#-spark-integration)
 
 ---
 
@@ -320,9 +321,79 @@ The image below demonstrates this limitation — **four ships** are visible in t
 
 | Path | Contents |
 |---|---|
-| `downloads/raw/` | Stitched AOIs (kept only if **no upscaling**) |
-| `downloads/upscaled/` | ×4 (or ×4×4 final) AOIs when upscaling is selected |
-| `results/raw/` | Detection overlays for **RAW** images |
-| `results/upscaled/` | Detection overlays for **UPSCALED** images |
+| `downloads/raw/` | Stitched AOIs |
+| `downloads/upscaled/` | ×4 AOIs |
+| `results/raw/` | Detection overlays (RAW) |
+| `results/upscaled/` | Detection overlays (UPSCALED) |
 
---- 
+---
+
+## ⚙️ Spark Integration
+
+The project includes a **fully containerized distributed processing system** for large-scale AOI processing using **Apache Spark**, **Redpanda (Kafka)**, **PostgreSQL**, and **MinIO**.
+
+### 🏗️ Building Docker Images
+
+```bash
+docker build -t spark-spark-app ./app
+docker-compose up -d --build
+```
+
+This builds the Spark base image (with Real-ESRGAN and ConvNeXt code) and launches all supporting containers.
+
+### 🌐 Accessing Services
+
+| Service | URL | Description |
+|----------|-----|-------------|
+| **Streamlit (aoi-submit)** | http://localhost:8501 | Submit AOIs, view job statuses, preview detection images |
+| **Spark Master UI** | http://localhost:8080 | Spark job overview |
+| **Spark History Server** | http://localhost:18080 | Completed job logs |
+| **Spark Worker 1** | http://localhost:8080 | Spark worker 1|
+| **Spark Worker 2** | http://localhost:8080 | Spark worker 2 |
+| **Spark Worker 3** | http://localhost:8080 | Spark worker 3 |
+| **Redpanda Console** | http://localhost:9644 | Kafka (topic: `aoi_jobs`) |
+| **MinIO Console** | http://localhost:9001 | Object storage browser (bucket: `aoi`) |
+| **Postgres** | https://localhost:5432 | Metadata and result tables |
+
+---
+
+### 🧱 System Architecture
+
+Below is the architecture diagram showing all containers and their interactions:
+
+![Spark Integration Diagram](results/SatelliteShipDetectionSpark.jpg)
+
+Each component corresponds to the following functional group:
+
+- **UI Layer:** `aoi-submit` Streamlit frontend for AOI job submission.  
+- **Messaging Layer:** `redpanda` (Kafka) handles AOI job queues (`aoi_jobs`).  
+- **Storage Layer:** `postgres` for metadata and results; `minio` for images.  
+- **Processing Layer:** `spark-master`, `spark-workers`, and `spark-app` perform Real-ESRGAN upscaling and ConvNeXt inference in parallel.  
+- **Monitoring Layer:** `spark-history` collects execution logs.  
+
+---
+
+### 🧩 Component Overview
+
+- **Streamlit UI (8501):** User interface for submitting AOI jobs and visualizing results.  
+- **Redpanda (9092):** Kafka-compatible message broker for job distribution.  
+- **PostgreSQL (5432):** Stores AOI job metadata, status, and results.  
+- **MinIO (9000/9001):** Stores raw, upscaled, and detection images.  
+- **Spark Master (7077/8080):** Cluster control and web UI.  
+- **Spark Workers (8081–8083):** Run distributed Python tasks (Real-ESRGAN + ConvNeXt).  
+- **Spark App:** Python streaming job consuming from Redpanda and writing to Postgres/MinIO.  
+- **Spark History (18080):** Job timeline viewer with event logs.
+
+---
+
+### ⚙️ Deployment Flow
+
+1. The Streamlit app sends job JSONs to Redpanda topic `aoi_jobs`.  
+2. Spark Structured Streaming reads messages in batches, distributes processing to workers.  
+3. Each worker downloads tiles, optionally upscales via Real-ESRGAN, runs ConvNeXt detection.  
+4. Results (images and metadata) are written to Postgres/MinIO.  
+5. The Streamlit UI periodically queries the DB to display progress and outputs.
+
+---
+
+This setup transforms the single-machine AOI downloader into a **scalable distributed system** capable of processing multiple AOIs concurrently.
