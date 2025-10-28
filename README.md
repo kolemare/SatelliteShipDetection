@@ -348,9 +348,9 @@ This builds the Spark base image (with Real-ESRGAN and ConvNeXt code) and launch
 | **Streamlit (aoi-submit)** | http://localhost:8501 | Submit AOIs, view job statuses, preview detection images |
 | **Spark Master UI** | http://localhost:8080 | Spark job overview |
 | **Spark History Server** | http://localhost:18080 | Completed job logs |
-| **Spark Worker 1** | http://localhost:8080 | Spark worker 1|
-| **Spark Worker 2** | http://localhost:8080 | Spark worker 2 |
-| **Spark Worker 3** | http://localhost:8080 | Spark worker 3 |
+| **Spark Worker 1** | http://localhost:8081 | Spark worker 1|
+| **Spark Worker 2** | http://localhost:8082 | Spark worker 2 |
+| **Spark Worker 3** | http://localhost:8083 | Spark worker 3 |
 | **Redpanda Console** | http://localhost:9644 | Kafka (topic: `aoi_jobs`) |
 | **MinIO Console** | http://localhost:9001 | Object storage browser (bucket: `aoi`) |
 | **Postgres** | https://localhost:5432 | Metadata and result tables |

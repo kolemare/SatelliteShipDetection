@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from invoke import task
 from pathlib import Path
+import shutil
 from tools import combine_and_extract, validate_parts
 import gui as graphical_interface  # keep as-is if you have it
 
@@ -28,6 +29,20 @@ def extract(c):
         print(f"OK: models → {pre_dir}")
     else:
         print("Model parts missing; skipped.")
+
+    # -------- Copy key model weights to spark/app --------
+    spark_app = BASE / "spark" / "app"
+    spark_app.mkdir(parents=True, exist_ok=True)
+
+    convnext_src = BASE / "training" / "pretrained" / "ConvNext" / "convnext_ships.pt"
+    realesrgan_src = BASE / "training" / "pretrained" / "RealESRGAN" /"RealESRGAN_x4plus.pth"
+
+    for src in (convnext_src, realesrgan_src):
+        if src.exists():
+            shutil.copy2(src, spark_app)
+            print(f"Copied {src.name} → {spark_app}")
+        else:
+            print(f"Missing {src.name}; not copied.")
 
 
 @task
