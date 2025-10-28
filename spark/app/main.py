@@ -36,50 +36,110 @@ def _init_partition():
         _ss = SuperSampler()
     return _engine, _ss
 
-def update_status(conn, aoi_id, status):
-    conn.execute(
-        text("UPDATE aoi_jobs SET status=:s, updated_at=now() WHERE aoi_id=:id"),
-        {"s": status, "id": aoi_id},
-    )
+# --------------------------
+# DB helpers (schema-correct)
+# --------------------------
+def ensure_job_row(conn, *, aoi_id, submit_name, zoom, bbox_wkt, upscaled, stride, thresh):
+    """
+    Insert the aoi_jobs row if it doesn't exist yet.
+    Uses your exact columns; no updated_at.
+    submit_name is UNIQUE, so ON CONFLICT on aoi_id is safest.
+    """
+    sql = text("""
+        INSERT INTO aoi_jobs (aoi_id, submit_name, zoom, bbox_wkt, upscaled, stride, thresh)
+        VALUES (:aoi_id, :submit_name, :zoom, :bbox_wkt, :upscaled, :stride, :thresh)
+        ON CONFLICT (aoi_id) DO NOTHING
+    """)
+    conn.execute(sql, {
+        "aoi_id": aoi_id,
+        "submit_name": submit_name,
+        "zoom": zoom,
+        "bbox_wkt": bbox_wkt,
+        "upscaled": upscaled,
+        "stride": stride,
+        "thresh": thresh,
+    })
 
-def fail_status(conn, aoi_id, msg: str):
-    conn.execute(
-        text("UPDATE aoi_jobs SET status='failed', updated_at=now() WHERE aoi_id=:id"),
-        {"id": aoi_id},
-    )
-    print(f"[fail] aoi_id={aoi_id}: {msg}", flush=True)
+def mark_status(conn, aoi_id: str, status: str):
+    """
+    Only uses columns in your schema: status, started_at, finished_at.
+    """
+    sql = text("""
+        UPDATE aoi_jobs
+        SET
+          status = :status,
+          started_at  = CASE
+                           WHEN :status = 'running' AND started_at IS NULL
+                           THEN now()
+                           ELSE started_at
+                         END,
+          finished_at = CASE
+                           WHEN :status IN ('completed','failed')
+                           THEN now()
+                           ELSE finished_at
+                         END
+        WHERE aoi_id = :aoi_id
+    """)
+    conn.execute(sql, {"status": status, "aoi_id": aoi_id})
 
-def upsert_results(conn, aoi_id, submit_name, n_found, raw_png, det_png, up_png=None):
-    conn.execute(
-        text(
-            """
-        INSERT INTO results
-          (aoi_id, submit_name, num_detections,
-           raw_image, raw_mime,
-           upscaled_image, upscaled_mime,
-           detection_image, detection_mime)
-        VALUES
-          (:a, :n, :num,
-           :raw, 'image/png',
-           :up,  CASE WHEN :up IS NULL THEN NULL ELSE 'image/png' END,
-           :det, 'image/png')
+def mark_started(conn, aoi_id: str):
+    mark_status(conn, aoi_id, "running")
+
+def mark_completed(conn, aoi_id: str):
+    mark_status(conn, aoi_id, "completed")
+
+def mark_failed(conn, aoi_id: str):
+    mark_status(conn, aoi_id, "failed")
+
+def upsert_results(conn, *, aoi_id, submit_name, num_detections,
+                   raw_png: bytes, det_png: bytes, up_png: bytes | None):
+    """
+    Uses only your 'results' columns. Sets *_mime to 'image/png' (or NULL for upscaled).
+    """
+    sql = text("""
+        INSERT INTO results (
+          aoi_id, submit_name, num_detections,
+          raw_image, raw_mime,
+          upscaled_image, upscaled_mime,
+          detection_image, detection_mime
+        )
+        VALUES (
+          :aoi_id, :submit_name, :num_det,
+          :raw_img, 'image/png',
+          :up_img,  CASE WHEN :up_img IS NULL THEN NULL ELSE 'image/png' END,
+          :det_img, 'image/png'
+        )
         ON CONFLICT (aoi_id) DO UPDATE SET
-          num_detections=EXCLUDED.num_detections,
-          raw_image=EXCLUDED.raw_image,
-          detection_image=EXCLUDED.detection_image,
-          upscaled_image=EXCLUDED.upscaled_image
-        """
-        ),
-        {"a": aoi_id, "n": submit_name, "num": n_found, "raw": raw_png, "det": det_png, "up": up_png},
-    )
+          submit_name     = EXCLUDED.submit_name,
+          num_detections  = EXCLUDED.num_detections,
+          raw_image       = EXCLUDED.raw_image,
+          raw_mime        = EXCLUDED.raw_mime,
+          upscaled_image  = EXCLUDED.upscaled_image,
+          upscaled_mime   = EXCLUDED.upscaled_mime,
+          detection_image = EXCLUDED.detection_image,
+          detection_mime  = EXCLUDED.detection_mime
+    """)
+    conn.execute(sql, {
+        "aoi_id": aoi_id,
+        "submit_name": submit_name,
+        "num_det": num_detections,
+        "raw_img": raw_png,
+        "up_img": up_png,
+        "det_img": det_png,
+    })
 
+# --------------------------
+# misc
+# --------------------------
 def _map_provider(provider_str: str) -> ProviderKey:
-    # Accept strings like "ESRI", "esri", etc.
     try:
         return ProviderKey[provider_str.upper()]
     except Exception:
         return ProviderKey.ESRI
 
+# --------------------------
+# core job
+# --------------------------
 def process_payload(payload: str):
     """Process a single Kafka message (JSON string)."""
     job = json.loads(payload or "{}")
@@ -99,58 +159,87 @@ def process_payload(payload: str):
     print(f"[job] aoi_id={aoi_id} name={submit_name} zoom={zoom} stride={stride} thresh={thresh} upscale={upscale}", flush=True)
 
     eng, ss = _init_partition()
-    with eng.begin() as conn:
+
+    try:
+        # 1) Ensure row exists (commit immediately so others can see it)
+        with eng.begin() as conn:
+            ensure_job_row(
+                conn,
+                aoi_id=aoi_id,
+                submit_name=submit_name,
+                zoom=zoom,
+                bbox_wkt=bbox_wkt,
+                upscaled=upscale,
+                stride=stride,
+                thresh=thresh,
+            )
+        print("[status] ensured aoi_jobs row exists", flush=True)
+
+        # Validate inputs early and mark failed if needed
+        if not bbox_wkt:
+            print("[ERROR] missing bbox_wkt", flush=True)
+            with eng.begin() as conn:
+                mark_failed(conn, aoi_id)
+            return
+
+        # 2) Mark queued → running (separate commit so UI/psql sees progress)
+        with eng.begin() as conn:
+            mark_status(conn, aoi_id, "queued")
+            mark_started(conn, aoi_id)
+        print(f"[status] aoi_id={aoi_id} → running", flush=True)
+
+        # 3) Heavy work (no DB writes here)
+        pc = ProviderCatalog()
+        prov_key = _map_provider(provider)
+        provider_obj = pc.get(prov_key)
+
+        print(f"[download] provider={provider_obj.name} bbox={bbox_wkt}", flush=True)
+        aoi = AOIRequest.from_wkt(bbox_wkt, zoom=zoom, provider=provider_obj)
+
+        stitcher = TileStitcher(tile_size=provider_obj.tile_size)
+        raw_img = stitcher.stitch(aoi)                         # PIL.Image
+        raw_rgb = np.array(raw_img, dtype=np.uint8)            # (H, W, 3), RGB
+        raw_png = _png_bytes(cv2.cvtColor(raw_rgb, cv2.COLOR_RGB2BGR))
+
+        # Optional upscale
+        up_png = None
+        if upscale:
+            print("[upscale] RealESRGAN x4", flush=True)
+            up_bgr = ss.enhance_np(cv2.cvtColor(raw_rgb, cv2.COLOR_RGB2BGR))
+            up_png = _png_bytes(up_bgr)
+            detect_rgb = cv2.cvtColor(up_bgr, cv2.COLOR_BGR2RGB)
+        else:
+            detect_rgb = raw_rgb
+
+        # Detect
+        print("[detect] ConvNeXt inference & drawing", flush=True)
+        overlay_rgb, n_found = detect_and_draw(detect_rgb, None, 224, stride, thresh)
+        det_png = _png_bytes(cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR))
+
+        # 4) Store results and mark completed (single commit)
+        with eng.begin() as conn:
+            upsert_results(
+                conn,
+                aoi_id=aoi_id,
+                submit_name=submit_name,
+                num_detections=n_found,
+                raw_png=raw_png,
+                det_png=det_png,
+                up_png=up_png,
+            )
+            mark_completed(conn, aoi_id)
+
+        print(f"[done] aoi_id={aoi_id} ✅ completed (detections={n_found})", flush=True)
+
+    except Exception as e:
+        traceback.print_exc()
+        # Ensure failure status is committed even if above failed mid-way
         try:
-            update_status(conn, aoi_id, "queued")
-
-            if not bbox_wkt:
-                fail_status(conn, aoi_id, "missing bbox_wkt")
-                return
-
-            # Resolve provider from payload (fallback to ESRI)
-            pc = ProviderCatalog()
-            prov_key = _map_provider(provider)
-            provider_obj = pc.get(prov_key)
-
-            # Download
-            update_status(conn, aoi_id, "downloading")
-            print(f"[download] provider={provider_obj.name} bbox={bbox_wkt}", flush=True)
-
-            # Build AOI from WKT + provider
-            aoi = AOIRequest.from_wkt(bbox_wkt, zoom=zoom, provider=provider_obj)
-
-            # Stitch tiles -> PIL.Image(RGB) -> np.ndarray (uint8)
-            stitcher = TileStitcher(tile_size=provider_obj.tile_size)
-            raw_img = stitcher.stitch(aoi)                         # PIL.Image
-            raw_rgb = np.array(raw_img, dtype=np.uint8)            # (H, W, 3), RGB
-            raw_png = _png_bytes(cv2.cvtColor(raw_rgb, cv2.COLOR_RGB2BGR))
-
-            # Optional upscale
-            up_png = None
-            if upscale:
-                update_status(conn, aoi_id, "upscaling")
-                print("[upscale] running RealESRGAN x4", flush=True)
-                up_bgr = ss.enhance_np(cv2.cvtColor(raw_rgb, cv2.COLOR_RGB2BGR))
-                up_png = _png_bytes(up_bgr)
-                detect_rgb = cv2.cvtColor(up_bgr, cv2.COLOR_BGR2RGB)
-            else:
-                detect_rgb = raw_rgb
-
-            # Detect
-            update_status(conn, aoi_id, "detecting")
-            print("[detect] running ConvNeXt inference & drawing", flush=True)
-            overlay_rgb, n_found = detect_and_draw(detect_rgb, None, 224, stride, thresh)
-            det_png = _png_bytes(cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR))
-
-            # Store
-            print(f"[store] detections={n_found}; writing blobs to DB", flush=True)
-            upsert_results(conn, aoi_id, submit_name, n_found, raw_png=raw_png, det_png=det_png, up_png=up_png)
-            update_status(conn, aoi_id, "completed")
-            print(f"[done] aoi_id={aoi_id} ✅ completed", flush=True)
-
-        except Exception as e:
+            with eng.begin() as conn:
+                mark_failed(conn, aoi_id)
+        except Exception:
             traceback.print_exc()
-            fail_status(conn, aoi_id, f"exception: {e}")
+        print(f"[fail] aoi_id={aoi_id}: {e}", flush=True)
 
 def foreach_partition(rows):
     """Partition handler for foreachPartition: iterate rows, call process_payload."""
@@ -188,8 +277,7 @@ if __name__ == "__main__":
         .format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BROKER)
         .option("subscribe", KAFKA_TOPIC)
-        .option("startingOffsets", "earliest")              # first clean run; ignored once checkpoint exists
-        # .option("kafka.group.id", "…")                    # DO NOT set: Spark manages its own group id
+        .option("startingOffsets", "earliest")  # ignored once checkpoint exists
         .option("failOnDataLoss", "false")
         .load()
     )
@@ -198,16 +286,15 @@ if __name__ == "__main__":
     values = df.select(F.col("value").cast(StringType()).alias("json")).repartition(3)
 
     def handle_batch(batch_df, batch_id):
-        # Avoid double actions on the same micro-batch; just process it.
         print(f"📦 foreachBatch: batch_id={batch_id}", flush=True)
         batch_df.foreachPartition(foreach_partition)
 
     query = (
         values.writeStream
         .foreachBatch(handle_batch)
-        .outputMode("append")                              # outputMode is ignored by foreachBatch; append is fine
+        .outputMode("append")  # ignored by foreachBatch; OK
         .trigger(processingTime="5 seconds")
-        .option("checkpointLocation", CHECKPOINT_DIR)      # Use a FRESH path after topic/partition changes
+        .option("checkpointLocation", CHECKPOINT_DIR)
         .start()
     )
 

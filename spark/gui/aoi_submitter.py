@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Streamlit AOI job submitter + status/preview
-# - Enqueue jobs (DB row + Kafka message)
+# - Enqueue jobs (DB row + Kafka message with full payload expected by Spark)
 # - Refresh to update status list
 # - Preview stored images (raw, optional upscaled, detection) for completed jobs
 #
@@ -24,6 +24,13 @@ from kafka import KafkaProducer
 DB_URL        = os.getenv("DB_URL",        "postgresql+psycopg2://aoi:aoi@postgres:5432/aoi")
 KAFKA_BROKER  = os.getenv("KAFKA_BROKER",  "redpanda:9092")
 KAFKA_TOPIC   = os.getenv("KAFKA_TOPIC",   "aoi_jobs")
+
+# -------------------------
+# Helpers: general
+# -------------------------
+def _to_bytes(x):
+    """Convert psycopg2 BYTEA (memoryview) or None to bytes/None."""
+    return None if x is None else (x if isinstance(x, (bytes, bytearray)) else bytes(x))
 
 # -------------------------
 # Helpers: geometry
@@ -106,8 +113,8 @@ def completed_jobs(conn, limit: int = 50) -> List[Dict]:
 
 def load_result_images_by_submit_name(conn, submit_name: str) -> Optional[Dict[str, bytes]]:
     """
-    Return dict with keys: raw_image (bytes), detection_image (bytes), upscaled_image (bytes|None)
-    and *_mime fields if present; None if not found.
+    Return dict with keys: raw, upscaled, detection -> tuples (bytes, mime|None).
+    Converts BYTEA (memoryview) to bytes for Streamlit compatibility.
     """
     row = conn.execute(text("""
         SELECT r.raw_image, r.raw_mime,
@@ -121,26 +128,30 @@ def load_result_images_by_submit_name(conn, submit_name: str) -> Optional[Dict[s
     if not row:
         return None
     m = row._mapping
+    raw_bytes      = _to_bytes(m["raw_image"])
+    upscaled_bytes = _to_bytes(m["upscaled_image"])
+    det_bytes      = _to_bytes(m["detection_image"])
     return {
-        "raw": (m["raw_image"], (m.get("raw_mime") or "image/png")),
-        "upscaled": (m["upscaled_image"], (m.get("upscaled_mime") or "image/png") if m["upscaled_image"] else None),
-        "detection": (m["detection_image"], (m.get("detection_mime") or "image/png")),
+        "raw":       (raw_bytes,      (m.get("raw_mime") or "image/png") if raw_bytes        else None),
+        "upscaled":  (upscaled_bytes, (m.get("upscaled_mime") or "image/png") if upscaled_bytes else None),
+        "detection": (det_bytes,      (m.get("detection_mime") or "image/png") if det_bytes    else None),
     }
 
 # -------------------------
 # Kafka
 # -------------------------
-def produce_kafka(aoi_id: uuid.UUID, submit_name: str):
+def produce_kafka(payload: dict):
+    """Produce the full job payload to Kafka."""
     producer = KafkaProducer(
         bootstrap_servers=[KAFKA_BROKER],
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        key_serializer=lambda v: v.encode("utf-8") if v else None,
+        key_serializer=lambda v: (v or "").encode("utf-8"),
         linger_ms=10,
         retries=3,
     )
-    payload = {"aoi_id": str(aoi_id), "submit_name": submit_name}
-    future = producer.send(KAFKA_TOPIC, key=str(aoi_id), value=payload)
-    rec = future.get(timeout=10)
+    key = payload.get("aoi_id", "")
+    fut = producer.send(KAFKA_TOPIC, key=key, value=payload)
+    rec = fut.get(timeout=10)
     producer.flush(5)
     producer.close(5)
     return rec
@@ -163,6 +174,8 @@ with st.sidebar:
     upscaled = st.checkbox("Upscale (RealESRGAN ×4)", value=True)
     stride = st.select_slider("Stride", options=[56, 64, 96, 112, 128, 160, 192], value=112)
     thresh = st.slider("Ship threshold", 0.1, 0.95, 0.5, 0.05)
+    # Optional provider choice (processor defaults to ESRI if omitted)
+    provider = st.selectbox("Provider", options=["ESRI", "OSM", "SENTINEL_EOX"], index=0)
 
     submit = st.button("🚀 Submit Job", use_container_width=True)
 
@@ -237,7 +250,6 @@ with right:
     preview_area = st.container()
 
     if refresh:
-        # Simply re-run to reload lists & UI
         st.rerun()
 
     if show and chosen:
@@ -257,7 +269,10 @@ with right:
                 # Raw
                 with img_cols[0]:
                     st.markdown("**Raw**")
-                    st.image(raw, caption="raw_image", use_column_width=True)
+                    if raw:
+                        st.image(raw, caption="raw_image", use_column_width=True)
+                    else:
+                        st.caption("— missing —")
 
                 # Upscaled (optional)
                 with img_cols[1]:
@@ -270,7 +285,10 @@ with right:
                 # Detection
                 with img_cols[2]:
                     st.markdown("**Detection**")
-                    st.image(det, caption="detection_image", use_column_width=True)
+                    if det:
+                        st.image(det, caption="detection_image", use_column_width=True)
+                    else:
+                        st.caption("— missing —")
 
         except Exception as e:
             preview_area.error(f"Failed to load results: {e}")
@@ -293,28 +311,37 @@ if submit:
     bbox_wkt = bbox_to_rect_wkt(w, s, e, n)
     aoi_id = uuid.uuid4()
 
+    # Insert a row in DB first (status='queued')
     try:
         eng = engine()
         with eng.begin() as conn:
             if job_name_exists(conn, name):
                 st.error("That job name already exists. Choose another.")
                 st.stop()
-            insert_job(conn, aoi_id, name, zoom, bbox_wkt, upscaled, stride, thresh)
+            insert_job(conn, aoi_id, name, int(zoom), bbox_wkt, bool(upscaled), int(stride), float(thresh))
         st.success("DB: job row inserted (status='queued').")
     except Exception as db_err:
         st.error(f"DB insert failed: {db_err}")
         st.stop()
 
+    # Build FULL payload (this is what the Spark processor expects)
+    payload = {
+        "aoi_id": str(aoi_id),
+        "submit_name": name,
+        "bbox_wkt": bbox_wkt,
+        "zoom": int(zoom),
+        "upscaled": bool(upscaled),
+        "stride": int(stride),
+        "thresh": float(thresh),
+        "provider": provider or "ESRI",   # processor defaults to ESRI if missing
+    }
+
+    # Produce to Kafka
     try:
-        meta = produce_kafka(aoi_id, name)
+        meta = produce_kafka(payload)
         st.success(f"Kafka: produced to {KAFKA_TOPIC} @ partition {meta.partition}, offset {meta.offset}.")
         st.info(f"✅ Enqueued job {name} (aoi_id={aoi_id})")
-        st.code(json.dumps({
-            "aoi_id": str(aoi_id),
-            "submit_name": name,
-            "zoom": zoom, "upscaled": upscaled, "stride": stride, "thresh": thresh,
-            "bbox_wkt": bbox_wkt
-        }, indent=2), language="json")
+        st.code(json.dumps(payload, indent=2), language="json")
         st.rerun()
     except Exception as k_err:
         st.error(f"Kafka produce failed: {k_err}")

@@ -224,6 +224,8 @@ services:
       - --master
       - spark://spark-master:7077
       - --verbose
+      - --files
+      - /opt/app/RealESRGAN_x4plus.pth,/opt/app/convnext_ships.pt
       - --conf
       - spark.eventLog.enabled=true
       - --conf
